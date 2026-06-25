@@ -16,9 +16,9 @@ fdm_mobo.py — FDM 双目标贝叶斯优化框架(human-in-the-loop)
 设计要点:
     * 所有状态只存在 trials.csv —— 可随时关掉程序、几天后回来继续。
     * 内部把两个目标统一成"都最大化"(min 目标乘 -1),GP / 采集函数只管最大化。
-    * 输入按搜索范围归一化、输出做标准化(GP 的前提),范围改 PARAMS 即可。
+    * 输入按搜索范围归一化、输出做标准化(GP 的前提),范围改对应实验的 config.yaml 即可。
 
-依赖: pip install botorch        # 会带上 torch / gpytorch
+依赖: pip install botorch pyyaml   # botorch 仅 BO 操作时需要(懒加载),会带上 torch / gpytorch
 """
 
 from __future__ import annotations

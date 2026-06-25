@@ -40,6 +40,11 @@ def test_save_load_roundtrip_with_nan(tmp_path):
     assert exp.is_complete(back[1]) and not exp.is_complete(back[0])
 
 
+def test_load_trials_empty_when_missing(tmp_path):
+    exp = _make_exp(tmp_path)
+    assert exp.load_trials() == []
+
+
 def test_next_idx(tmp_path):
     exp = _make_exp(tmp_path)
     assert exp.next_idx([]) == 0
