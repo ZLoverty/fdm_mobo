@@ -28,6 +28,7 @@ import csv
 import json
 import math
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -209,6 +210,68 @@ class Experiment:
             rows.append(r)
         self.save_trials(rows)
         self.write_meta()
+
+
+# ============================== 实验发现 / 迁移 ==============================
+
+EXPERIMENTS_DIR = Path("experiments")
+
+LEGACY_CONFIG_YAML = """\
+# 由旧版硬编码配置迁移生成
+params:
+  - {name: fan,  low: 0.0,  high: 100.0}
+  - {name: flow, low: 0.9,  high: 1.1}
+objectives:
+  - {name: surface, goal: max}
+  - {name: TS,      goal: max}
+n_init: 6
+seed: 0
+batch: 1
+num_restarts: 12
+raw_samples: 256
+mc_samples: 128
+"""
+
+
+def list_experiments(root=EXPERIMENTS_DIR) -> list[str]:
+    root = Path(root)
+    if not root.exists():
+        return []
+    return sorted(p.name for p in root.iterdir()
+                  if p.is_dir() and (p / "config.yaml").exists())
+
+
+def get_current(root=EXPERIMENTS_DIR) -> str | None:
+    f = Path(root) / ".current"
+    if not f.exists():
+        return None
+    name = f.read_text(encoding="utf-8").strip()
+    return name or None
+
+
+def set_current(name: str, root=EXPERIMENTS_DIR) -> None:
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / ".current").write_text(name, encoding="utf-8")
+
+
+def create_experiment(name: str, template_yaml: str, root=EXPERIMENTS_DIR) -> Experiment:
+    d = Path(root) / name
+    d.mkdir(parents=True, exist_ok=False)
+    (d / "config.yaml").write_text(template_yaml, encoding="utf-8")
+    return Experiment(d)
+
+
+def migrate_legacy(legacy_csv="trials.csv", root=EXPERIMENTS_DIR) -> str | None:
+    root = Path(root)
+    legacy_csv = Path(legacy_csv)
+    if root.exists() or not legacy_csv.exists():
+        return None
+    exp = create_experiment("default", LEGACY_CONFIG_YAML, root=root)
+    shutil.move(str(legacy_csv), str(exp.trials_path))
+    exp.write_meta()
+    set_current("default", root=root)
+    return "default"
 
 
 # ============================== 展示 ==============================
