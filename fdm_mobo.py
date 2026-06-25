@@ -278,149 +278,147 @@ def migrate_legacy(legacy_csv="trials.csv", root=EXPERIMENTS_DIR) -> str | None:
 
 # ============================== 展示 ==============================
 
-def fmt_params(r: dict) -> str:
-    return "  ".join(f"{p.name}={r[p.name]:g}" for p in PARAMS)
+def fmt_params(exp, r):
+    return "  ".join(f"{p.name}={r[p.name]:g}" for p in exp.cfg.params)
 
 
-def fmt_objs(r: dict) -> str:
+def fmt_objs(exp, r):
     return "  ".join(
         f"{o.name}=" + ("?" if math.isnan(r[o.name]) else f"{r[o.name]:g}")
-        for o in OBJECTIVES
+        for o in exp.cfg.objectives
     )
 
 
-def print_rows(rows: list[dict]) -> None:
+def print_rows(exp, rows):
     for r in rows:
-        tag = "[待测]" if not is_complete(r) else "      "
-        print(f"  #{r['idx']:<3} {tag} {fmt_params(r):<28} {fmt_objs(r)}")
+        tag = "[待测]" if not exp.is_complete(r) else "      "
+        print(f"  #{r['idx']:<3} {tag} {fmt_params(exp, r):<28} {fmt_objs(exp, r)}")
+
+
+def resolve_experiment(name, root=EXPERIMENTS_DIR) -> Experiment:
+    name = name or get_current(root) or "default"
+    d = Path(root) / name
+    if not (d / "config.yaml").exists():
+        raise SystemExit(f"实验 '{name}' 不存在（{d}/config.yaml 未找到）。")
+    exp = Experiment(d)
+    conflict = exp.check_conflict()
+    if conflict:
+        raise SystemExit(conflict)
+    return exp
 
 
 # ============================== 子命令 ==============================
 
 def cmd_init(args):
-    rows = load_trials()
-    if rows:
-        print("trials.csv 已存在,跳过 init(用 suggest / record 继续)。")
+    exp = resolve_experiment(args.exp)
+    if exp.load_trials():
+        print("该实验已有 trials.csv，跳过 init（用 suggest / record 继续）。")
         return
-    pts = draw_sobol_samples(bounds=bounds_tensor(), n=N_INIT, q=1, seed=SEED).squeeze(1)
-    rows = []
-    for i, p in enumerate(pts):
-        r = {"idx": i, "phase": "init", "time": ""}
-        for j, par in enumerate(PARAMS):
-            r[par.name] = round(float(p[j]), 3)
-        for o in OBJECTIVES:
-            r[o.name] = math.nan
-        rows.append(r)
-    save_trials(rows)
-    print(f"已生成 {N_INIT} 个初始点 -> {TRIALS_CSV}\n按下面参数逐个打印并测量,然后 record:")
-    print_rows(rows)
+    exp.init_sobol()
+    rows = exp.load_trials()
+    print(f"已生成 {exp.cfg.n_init} 个初始点 -> {exp.trials_path}")
+    print_rows(exp, rows)
 
 
 def cmd_suggest(args):
-    rows = load_trials()
+    exp = resolve_experiment(args.exp)
+    rows = exp.load_trials()
     if not rows:
-        raise SystemExit("还没有 trials.csv,先运行 init。")
-    pending = [r for r in rows if not is_complete(r)]
+        raise SystemExit("还没有 trials.csv，先运行 init。")
+    pending = [r for r in rows if not exp.is_complete(r)]
     if pending:
-        print("还有未测量的点,先把它们打印+测量并 record,再来 suggest:")
-        print_rows(pending)
+        print("还有未测量的点，先 record 再 suggest：")
+        print_rows(exp, pending)
         return
-    cand = suggest_next(rows)
-    start = next_idx(rows)
+    cand = exp.suggest_next()
+    start = exp.next_idx(rows)
     new = []
     for k, c in enumerate(cand):
         r = {"idx": start + k, "phase": "bo", "time": ""}
-        for j, par in enumerate(PARAMS):
+        for j, par in enumerate(exp.cfg.params):
             r[par.name] = round(float(c[j]), 3)
-        for o in OBJECTIVES:
+        for o in exp.cfg.objectives:
             r[o.name] = math.nan
         rows.append(r)
         new.append(r)
-    save_trials(rows)
-    print("下一个实验点(qLogNEHVI):")
-    print_rows(new)
+    exp.save_trials(rows)
+    print("下一个实验点（qLogNEHVI）：")
+    print_rows(exp, new)
 
 
 def cmd_record(args):
-    rows = load_trials()
+    exp = resolve_experiment(args.exp)
+    rows = exp.load_trials()
     by_idx = {r["idx"]: r for r in rows}
-
     if args.idx is not None:
         r = by_idx.get(args.idx)
         if r is None:
             raise SystemExit(f"找不到 #{args.idx}")
         if args.values:
-            if len(args.values) != len(OBJECTIVES):
-                raise SystemExit(f"需要 {len(OBJECTIVES)} 个值: {[o.name for o in OBJECTIVES]}")
-            for o, v in zip(OBJECTIVES, args.values):
+            if len(args.values) != len(exp.cfg.objectives):
+                raise SystemExit(f"需要 {len(exp.cfg.objectives)} 个值: {[o.name for o in exp.cfg.objectives]}")
+            for o, v in zip(exp.cfg.objectives, args.values):
                 r[o.name] = float(v)
         else:
-            for o in OBJECTIVES:
+            for o in exp.cfg.objectives:
                 v = input(f"#{args.idx} {o.name} = ").strip()
                 if v:
                     r[o.name] = float(v)
         r["time"] = datetime.now().isoformat(timespec="seconds")
-        save_trials(rows)
-        print("已保存 #%d: %s" % (args.idx, fmt_objs(r)))
+        exp.save_trials(rows)
+        print("已保存 #%d: %s" % (args.idx, fmt_objs(exp, r)))
         return
-
-    # 交互模式:逐个填未测量的点
-    pending = [r for r in rows if not is_complete(r)]
+    pending = [r for r in rows if not exp.is_complete(r)]
     if not pending:
         print("没有待测量的点。")
         return
     for r in pending:
-        print(f"\n#{r['idx']}  {fmt_params(r)}  (留空跳过)")
-        for o in OBJECTIVES:
+        print(f"\n#{r['idx']}  {fmt_params(exp, r)}  (留空跳过)")
+        for o in exp.cfg.objectives:
             v = input(f"  {o.name} = ").strip()
             if v:
                 r[o.name] = float(v)
-        if is_complete(r):
+        if exp.is_complete(r):
             r["time"] = datetime.now().isoformat(timespec="seconds")
-    save_trials(rows)
+    exp.save_trials(rows)
     print("\n已保存。")
 
 
 def cmd_status(args):
-    rows = load_trials()
+    exp = resolve_experiment(args.exp)
+    rows = exp.load_trials()
     if not rows:
         print("还没有数据。先 init。")
         return
-    done = [r for r in rows if is_complete(r)]
-    print(f"实验总数 {len(rows)},已完成 {len(done)},待测 {len(rows) - len(done)}")
-    print_rows(rows)
+    done = [r for r in rows if exp.is_complete(r)]
+    print(f"实验总数 {len(rows)}，已完成 {len(done)}，待测 {len(rows) - len(done)}")
+    print_rows(exp, rows)
     if done:
-        pareto, hv = pareto_and_hv(rows)
-        print(f"\n当前 Pareto 前沿({len(pareto)} 个非支配点):")
-        print_rows(pareto)
-        print(f"\n超体积 hypervolume = {hv:.4g}（越大越好,用来追踪每轮进展）")
+        pareto, hv = exp.pareto_and_hv()
+        print(f"\n当前 Pareto 前沿（{len(pareto)} 个非支配点）：")
+        print_rows(exp, pareto)
+        print(f"\n超体积 hypervolume = {hv:.4g}")
 
 
 def cmd_apply(args):
-    """可选:把某个点的 fan/flow 通过 Moonraker 下发到打印机。
-    注意:这只设置风扇与流量,真正起跑打印仍走你 HEPiC / 切片那一套。"""
-    rows = load_trials()
-    r = {x["idx"]: x for x in rows}.get(args.idx)
+    exp = resolve_experiment(args.exp)
+    r = {x["idx"]: x for x in exp.load_trials()}.get(args.idx)
     if r is None:
         raise SystemExit(f"找不到 #{args.idx}")
-    fan = r["fan"]
-    flow = r["flow"]
+    fan = r["fan"]; flow = r["flow"]
     fan_s = int(round(fan / 100.0 * 255))
     gcode = f"M106 S{fan_s}\nM221 S{int(round(flow))}"
     print(f"#{args.idx} -> fan {fan:g}% (M106 S{fan_s}), flow {flow:g}% (M221 S{int(round(flow))})")
     if not args.host:
-        print("(未提供 --host,仅打印 gcode,不下发)")
+        print("(未提供 --host，仅打印 gcode，不下发)")
         print(gcode)
         return
-    import json
+    import json as _json
     import urllib.request
     url = args.host.rstrip("/") + "/printer/gcode/script"
     req = urllib.request.Request(
-        url,
-        data=json.dumps({"script": gcode}).encode(),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+        url, data=_json.dumps({"script": gcode}).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=10) as resp:
         print("Moonraker:", resp.status, resp.read().decode()[:200])
 
@@ -428,21 +426,25 @@ def cmd_apply(args):
 # ============================== 入口 ==============================
 
 def main():
-    ap = argparse.ArgumentParser(description="FDM 双目标贝叶斯优化 (fan, flow) -> (surface, TS)")
+    migrate_legacy()
+    ap = argparse.ArgumentParser(description="FDM 多目标贝叶斯优化")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("init", help="生成初始 Sobol 实验点").set_defaults(func=cmd_init)
-    sub.add_parser("suggest", help="给出下一个实验点").set_defaults(func=cmd_suggest)
-    sub.add_parser("status", help="查看实验 / Pareto / 超体积").set_defaults(func=cmd_status)
+    def add_exp(p):
+        p.add_argument("--exp", type=str, default=None, help="实验名（默认读 experiments/.current）")
 
-    pr = sub.add_parser("record", help="回填测量值")
-    pr.add_argument("--idx", type=int, help="指定 trial 编号;不给则交互回填所有待测点")
-    pr.add_argument("values", nargs="*", help=f"按顺序给 {[o.name for o in OBJECTIVES]}")
+    p_init = sub.add_parser("init", help="生成初始 Sobol 实验点"); add_exp(p_init); p_init.set_defaults(func=cmd_init)
+    p_sug = sub.add_parser("suggest", help="给出下一个实验点"); add_exp(p_sug); p_sug.set_defaults(func=cmd_suggest)
+    p_st = sub.add_parser("status", help="查看实验 / Pareto / 超体积"); add_exp(p_st); p_st.set_defaults(func=cmd_status)
+
+    pr = sub.add_parser("record", help="回填测量值"); add_exp(pr)
+    pr.add_argument("--idx", type=int)
+    pr.add_argument("values", nargs="*")
     pr.set_defaults(func=cmd_record)
 
-    pa = sub.add_parser("apply", help="(可选) 经 Moonraker 下发 fan/flow")
+    pa = sub.add_parser("apply", help="(可选) 经 Moonraker 下发 fan/flow"); add_exp(pa)
     pa.add_argument("--idx", type=int, required=True)
-    pa.add_argument("--host", type=str, default="", help="如 http://192.168.1.50")
+    pa.add_argument("--host", type=str, default="")
     pa.set_defaults(func=cmd_apply)
 
     args = ap.parse_args()
