@@ -17,6 +17,7 @@
 - 冲突时**拒绝加载**该实验数据，绝不静默喂入模型。
 - 冲突提示文案（逐字）：`配置与已采集数据不匹配，旧数据已失效。\n请改回配置，或用『新建实验』复制此配置再改维度。`
 - 数值精度保持现状：BoTorch 用 `torch.set_default_dtype(torch.double)`；Sobol 点 `round(..., 3)`。
+- **懒加载 torch/botorch**：`fdm_mobo.py` 顶部**不再** import torch/botorch/gpytorch；导入 `fdm_mobo` 模块本身不得触发 torch。torch 与 botorch 符号在需要它们的 `Experiment` 方法内部局部 import（`to_XY`/`fit_model`/`suggest_next`/`pareto_and_hv`/`init_sobol`）。每个创建张量的方法在开头执行 `import torch; torch.set_default_dtype(torch.double)`（重复调用安全）。目的：数据层/迁移/发现/CLI 解析/GUI 启动不依赖 torch。
 - `experiments/` 为运行时数据，加入 `.gitignore`（但保留 spec/plan 文档）。
 
 ---
@@ -332,7 +333,9 @@ Expected: FAIL — `AttributeError: module 'fdm_mobo' has no attribute 'Experime
 
 - [ ] **Step 3: 写实现**
 
-在 `fdm_mobo.py` 顶部 import 区之后，把原配置区（`@dataclass Param/Objective`、`PARAMS`、`OBJECTIVES`、`N_INIT`、`BATCH`、`TRIALS_CSV`、`SEED`、`NUM_RESTARTS`、`RAW_SAMPLES`、`MC_SAMPLES`、`FIELDNAMES`）整段删除，替换为：
+**先改顶部 import 区（懒加载 torch）**：删除 `fdm_mobo.py` 顶部所有 torch/botorch/gpytorch 的 import（`import torch`、`from botorch...`、`from gpytorch...`）以及模块级 `torch.set_default_dtype(torch.double)` 那一行。顶部只保留 stdlib：`argparse, csv, math, os`（原有）+ 新增 `import json` 与 `from pathlib import Path`。torch/botorch 将在 Task 3 的 BO 方法内部局部 import。导入 `fdm_mobo` 模块本身不得触发 torch（Task 2 的测试 `import fdm_mobo as core` 必须在无 torch 时也能成功）。
+
+然后把原配置区（`@dataclass Param/Objective`、`PARAMS`、`OBJECTIVES`、`N_INIT`、`BATCH`、`TRIALS_CSV`、`SEED`、`NUM_RESTARTS`、`RAW_SAMPLES`、`MC_SAMPLES`、`FIELDNAMES`）整段删除，替换为：
 
 ```python
 from pathlib import Path
@@ -505,12 +508,16 @@ Expected: FAIL — `AttributeError: 'Experiment' object has no attribute 'init_s
 
 - [ ] **Step 3: 写实现**
 
-在 `Experiment` 类中追加以下方法（把原模块自由函数 `bounds_tensor/to_XY/fit_model/ref_point/suggest_next/pareto_and_hv` 删除，逻辑迁入这里，参数从全局改为 `self.cfg`）：
+在 `Experiment` 类中追加以下方法（把原模块自由函数 `bounds_tensor/to_XY/fit_model/ref_point/suggest_next/pareto_and_hv` 删除，逻辑迁入这里，参数从全局改为 `self.cfg`）。
+
+**懒加载约定**（见 Global Constraints）：torch/botorch 符号在方法内部局部 import，顶部不再有这些 import。每个创建张量的方法开头执行 `import torch; torch.set_default_dtype(torch.double)`（重复调用安全）。具体如下：
 
 ```python
     # ---- 张量 / 模型 ----
     def to_XY(self):
-        done = [r for r in self.load_trials_done()]
+        import torch
+        torch.set_default_dtype(torch.double)
+        done = self.load_trials_done()
         X = torch.tensor([[r[p.name] for p in self.cfg.params] for r in done])
         Y_raw = torch.tensor([[r[o.name] for o in self.cfg.objectives] for r in done])
         signs = torch.tensor([o.sign for o in self.cfg.objectives])
@@ -520,6 +527,11 @@ Expected: FAIL — `AttributeError: 'Experiment' object has no attribute 'init_s
         return [r for r in self.load_trials() if self.is_complete(r)]
 
     def fit_model(self, X, Y):
+        from botorch.models import SingleTaskGP
+        from botorch.models.transforms.input import Normalize
+        from botorch.models.transforms.outcome import Standardize
+        from botorch.fit import fit_gpytorch_mll
+        from gpytorch.mlls import ExactMarginalLogLikelihood
         model = SingleTaskGP(
             X, Y,
             input_transform=Normalize(d=X.shape[-1], bounds=self.cfg.bounds_tensor()),
@@ -531,12 +543,20 @@ Expected: FAIL — `AttributeError: 'Experiment' object has no attribute 'init_s
 
     @staticmethod
     def _ref_point(Y):
+        import torch
         mn = Y.min(dim=0).values
         rng = Y.max(dim=0).values - mn
         rng = torch.where(rng > 0, rng, torch.ones_like(rng))
         return mn - 0.1 * rng
 
     def suggest_next(self):
+        import torch
+        torch.set_default_dtype(torch.double)
+        from botorch.acquisition.multi_objective.logei import (
+            qLogNoisyExpectedHypervolumeImprovement,
+        )
+        from botorch.sampling.normal import SobolQMCNormalSampler
+        from botorch.optim import optimize_acqf
         X, Y, done = self.to_XY()
         if len(done) < 2:
             raise RuntimeError("已完成的实验少于 2 个，先回填更多点再 suggest。")
@@ -558,6 +578,10 @@ Expected: FAIL — `AttributeError: 'Experiment' object has no attribute 'init_s
         return candidates.detach()
 
     def pareto_and_hv(self):
+        from botorch.utils.multi_objective.pareto import is_non_dominated
+        from botorch.utils.multi_objective.box_decompositions.dominated import (
+            DominatedPartitioning,
+        )
         X, Y, done = self.to_XY()
         if len(done) == 0:
             return [], float("nan")
@@ -568,6 +592,9 @@ Expected: FAIL — `AttributeError: 'Experiment' object has no attribute 'init_s
 
     # ---- 初始化 ----
     def init_sobol(self) -> None:
+        import torch
+        torch.set_default_dtype(torch.double)
+        from botorch.utils.sampling import draw_sobol_samples
         if self.load_trials():
             raise RuntimeError("该实验已有数据，init 会覆盖；请新建实验或先清空。")
         pts = draw_sobol_samples(
