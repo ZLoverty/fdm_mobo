@@ -360,46 +360,52 @@ class App(tk.Tk):
         oname   = self._vizvar.get()
         done    = [r for r in rows if self.exp.is_complete(r)]
         pending = [r for r in rows if not self.exp.is_complete(r)]
-        px, py  = self.cfg.params[0], self.cfg.params[1]
 
         # ── 左图：参数空间 ─────────────────────────────────────
         ax = self._ax1
-        if done:
-            xs = np.array([r[px.name] for r in done])
-            ys = np.array([r[py.name] for r in done])
-            vs = np.array([r[oname]   for r in done], dtype=float)
-            sc = ax.scatter(xs, ys, c=vs, cmap="RdYlGn", s=75, zorder=3,
-                            edgecolors="#444", linewidths=0.5)
-            self._cbar = self._fig.colorbar(sc, ax=ax, label=oname, shrink=0.85, pad=0.02)
-            for r in done:
-                ax.annotate(f"#{r['idx']}", (r[px.name], r[py.name]),
-                            xytext=(4, 3), textcoords="offset points",
-                            fontsize=7.5, color="#222")
-            # Pareto 点加蓝圈标记
-            pp = [r for r in done if r["idx"] in self._pareto_idxs]
-            if pp:
-                ax.scatter([r[px.name] for r in pp], [r[py.name] for r in pp],
-                           s=200, facecolors="none", edgecolors="#0044bb",
-                           linewidths=2.2, zorder=5, label="Pareto")
+        if len(self.cfg.params) >= 2:
+            px, py  = self.cfg.params[0], self.cfg.params[1]
+            if done:
+                xs = np.array([r[px.name] for r in done])
+                ys = np.array([r[py.name] for r in done])
+                vs = np.array([r[oname]   for r in done], dtype=float)
+                sc = ax.scatter(xs, ys, c=vs, cmap="RdYlGn", s=75, zorder=3,
+                                edgecolors="#444", linewidths=0.5)
+                self._cbar = self._fig.colorbar(sc, ax=ax, label=oname, shrink=0.85, pad=0.02)
+                for r in done:
+                    ax.annotate(f"#{r['idx']}", (r[px.name], r[py.name]),
+                                xytext=(4, 3), textcoords="offset points",
+                                fontsize=7.5, color="#222")
+                # Pareto 点加蓝圈标记
+                pp = [r for r in done if r["idx"] in self._pareto_idxs]
+                if pp:
+                    ax.scatter([r[px.name] for r in pp], [r[py.name] for r in pp],
+                               s=200, facecolors="none", edgecolors="#0044bb",
+                               linewidths=2.2, zorder=5, label="Pareto")
 
-        if pending:
-            ax.scatter([r[px.name] for r in pending], [r[py.name] for r in pending],
-                       marker="x", s=95, c="#b84800", lw=2.2, zorder=4, label="待测")
-            for r in pending:
-                ax.annotate(f"#{r['idx']}", (r[px.name], r[py.name]),
-                            xytext=(4, 3), textcoords="offset points",
-                            fontsize=7.5, color="#b84800")
+            if pending:
+                ax.scatter([r[px.name] for r in pending], [r[py.name] for r in pending],
+                           marker="x", s=95, c="#b84800", lw=2.2, zorder=4, label="待测")
+                for r in pending:
+                    ax.annotate(f"#{r['idx']}", (r[px.name], r[py.name]),
+                                xytext=(4, 3), textcoords="offset points",
+                                fontsize=7.5, color="#b84800")
 
-        mx = (px.high - px.low) * 0.06
-        my = (py.high - py.low) * 0.06
-        ax.set_xlim(px.low - mx, px.high + mx)
-        ax.set_ylim(py.low - my, py.high + my)
-        ax.set_xlabel(px.name, fontsize=10)
-        ax.set_ylabel(py.name, fontsize=10)
-        ax.set_title("参数空间", fontsize=10)
-        ax.grid(True, alpha=0.22)
-        if done or pending:
-            ax.legend(fontsize=8, loc="upper right")
+            mx = (px.high - px.low) * 0.06
+            my = (py.high - py.low) * 0.06
+            ax.set_xlim(px.low - mx, px.high + mx)
+            ax.set_ylim(py.low - my, py.high + my)
+            ax.set_xlabel(px.name, fontsize=10)
+            ax.set_ylabel(py.name, fontsize=10)
+            ax.set_title("参数空间", fontsize=10)
+            ax.grid(True, alpha=0.22)
+            if done or pending:
+                ax.legend(fontsize=8, loc="upper right")
+        else:
+            ax.text(0.5, 0.5, "需要 ≥2 个参数才能绘制参数空间",
+                    ha="center", va="center", transform=ax.transAxes,
+                    fontsize=10, color="#888")
+            ax.set_title("参数空间", fontsize=10)
 
         # ── 右图：目标空间 ─────────────────────────────────────
         ax2 = self._ax2

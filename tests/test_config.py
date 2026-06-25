@@ -87,3 +87,15 @@ def test_bounds_tensor_shape_and_values(tmp_path):
     assert b.dtype == torch.double
     assert b[0].tolist() == [0.0, 0.9]
     assert b[1].tolist() == [100.0, 1.1]
+
+
+def test_rejects_invalid_goal(tmp_path):
+    import pytest
+    text = """\
+params:
+  - {name: fan, low: 0, high: 100}
+objectives:
+  - {name: TS, goal: maximize}
+"""
+    with pytest.raises(ValueError):
+        fc.Config.from_yaml(_write(tmp_path, text))

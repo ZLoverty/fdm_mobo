@@ -44,7 +44,14 @@ class Config:
     @classmethod
     def from_dict(cls, d: dict) -> "Config":
         params = [Param(p["name"], float(p["low"]), float(p["high"])) for p in d["params"]]
-        objs = [Objective(o["name"], o["goal"]) for o in d["objectives"]]
+        objs = []
+        for o in d["objectives"]:
+            name, goal = o["name"], o["goal"]
+            if goal not in ("max", "min"):
+                raise ValueError(
+                    f"objective '{name}' has invalid goal {goal!r}; must be 'max' or 'min'"
+                )
+            objs.append(Objective(name, goal))
         kw = {k: d.get(k, v) for k, v in _DEFAULTS.items()}
         return cls(params=params, objectives=objs, **kw)
 
