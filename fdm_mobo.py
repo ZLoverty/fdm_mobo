@@ -25,122 +25,90 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
 import os
-from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
-import torch
-from botorch.models import SingleTaskGP
-from botorch.models.transforms.input import Normalize
-from botorch.models.transforms.outcome import Standardize
-from botorch.fit import fit_gpytorch_mll
-from gpytorch.mlls import ExactMarginalLogLikelihood
-from botorch.acquisition.multi_objective.logei import (
-    qLogNoisyExpectedHypervolumeImprovement,
-)
-from botorch.sampling.normal import SobolQMCNormalSampler
-from botorch.optim import optimize_acqf
-from botorch.utils.sampling import draw_sobol_samples
-from botorch.utils.multi_objective.pareto import is_non_dominated
-from botorch.utils.multi_objective.box_decompositions.dominated import (
-    DominatedPartitioning,
+from fdm_config import Param, Objective, Config  # noqa: F401  (Param/Objective re-export)
+
+CONFLICT_MSG = (
+    "配置与已采集数据不匹配，旧数据已失效。\n"
+    "请改回配置，或用『新建实验』复制此配置再改维度。"
 )
 
-torch.set_default_dtype(torch.double)  # BO 一律用 double,float32 容易数值不稳
 
+class Experiment:
+    """绑定一个 experiments/<name>/ 文件夹：配置 + trials.csv + meta.json。"""
 
-# ============================== 配置区 ==============================
-# 改机器 / 改材料时,基本只动这一段。
+    def __init__(self, dir, cfg: Config | None = None):
+        self.dir = Path(dir)
+        self.cfg = cfg if cfg is not None else Config.from_yaml(self.dir / "config.yaml")
 
-@dataclass
-class Param:
-    name: str
-    low: float
-    high: float
-
-
-@dataclass
-class Objective:
-    name: str
-    goal: str  # 'max' 越大越好 / 'min' 越小越好
+    # ---- 路径 ----
+    @property
+    def trials_path(self) -> Path:
+        return self.dir / "trials.csv"
 
     @property
-    def sign(self) -> float:
-        return 1.0 if self.goal == "max" else -1.0
+    def meta_path(self) -> Path:
+        return self.dir / "meta.json"
 
-
-# 两个连续输入及其搜索范围
-PARAMS = [
-    Param("fan", 0.0, 100.0),    # 风扇功率 %(下发时换算成 M106 S0-255)
-    Param("flow", 0.9, 1.1),  # 流量比例 %(挤出倍率,M221 S)
-]
-
-# 两个目标及方向
-#   surface: 这里按"表面质量,越高越好"处理(goal='max')。
-#            如果你实际测的是粗糙度 Ra(越低越好),把它改成 'min' 即可,
-#            框架会自动处理方向,其余代码不用动。
-#   TS:      拉伸强度 MPa,越高越好。
-OBJECTIVES = [
-    Objective("surface", "max"),
-    Objective("TS", "max"),
-]
-
-N_INIT = 6        # 初始 Sobol 点数,经验值约 2*(d+1)=6
-BATCH = 1         # 每轮建议几个点;若能并行打印多个件,调大(2~4)
-TRIALS_CSV = "trials.csv"
-SEED = 0
-
-# 采集函数优化的预算(越大越准、越慢)
-NUM_RESTARTS = 12
-RAW_SAMPLES = 256
-MC_SAMPLES = 128
-
-
-# ============================== 数据层 ==============================
-# 一条 trial = 一行 CSV。测量值为空 = 还没测(pending)。
-
-FIELDNAMES = (
-    ["idx", "phase"]
-    + [p.name for p in PARAMS]
-    + [o.name for o in OBJECTIVES]
-    + ["time"]
-)
-
-
-def load_trials(path: str = TRIALS_CSV) -> list[dict]:
-    if not os.path.exists(path):
-        return []
-    with open(path, newline="") as f:
-        rows = list(csv.DictReader(f))
-    for r in rows:
-        r["idx"] = int(r["idx"])
-        for p in PARAMS:
-            r[p.name] = float(r[p.name])
-        for o in OBJECTIVES:
-            v = r.get(o.name, "")
-            r[o.name] = float(v) if v not in ("", None) else math.nan
-    return rows
-
-
-def save_trials(rows: list[dict], path: str = TRIALS_CSV) -> None:
-    with open(path, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=FIELDNAMES)
-        w.writeheader()
+    # ---- 数据读写 ----
+    def load_trials(self) -> list[dict]:
+        path = self.trials_path
+        if not path.exists():
+            return []
+        with open(path, newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
         for r in rows:
-            out = {k: r.get(k, "") for k in FIELDNAMES}
-            for o in OBJECTIVES:  # NaN -> 空字符串
-                v = r.get(o.name, math.nan)
-                out[o.name] = "" if (isinstance(v, float) and math.isnan(v)) else v
-            w.writerow(out)
+            r["idx"] = int(r["idx"])
+            for p in self.cfg.params:
+                r[p.name] = float(r[p.name])
+            for o in self.cfg.objectives:
+                v = r.get(o.name, "")
+                r[o.name] = float(v) if v not in ("", None) else math.nan
+        return rows
 
+    def save_trials(self, rows: list[dict]) -> None:
+        fields = self.cfg.fieldnames()
+        with open(self.trials_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fields)
+            w.writeheader()
+            for r in rows:
+                out = {k: r.get(k, "") for k in fields}
+                for o in self.cfg.objectives:
+                    v = r.get(o.name, math.nan)
+                    out[o.name] = "" if (isinstance(v, float) and math.isnan(v)) else v
+                w.writerow(out)
 
-def is_complete(r: dict) -> bool:
-    return all(not math.isnan(r[o.name]) for o in OBJECTIVES)
+    def is_complete(self, r: dict) -> bool:
+        return all(not math.isnan(r[o.name]) for o in self.cfg.objectives)
 
+    def next_idx(self, rows: list[dict]) -> int:
+        return (max((r["idx"] for r in rows), default=-1)) + 1
 
-def next_idx(rows: list[dict]) -> int:
-    return (max((r["idx"] for r in rows), default=-1)) + 1
+    # ---- meta / 冲突检测 ----
+    def write_meta(self) -> None:
+        meta = {
+            "config_fingerprint": self.cfg.fingerprint(),
+            "created": datetime.now().isoformat(timespec="seconds"),
+        }
+        self.meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    def _read_meta(self) -> dict | None:
+        if not self.meta_path.exists():
+            return None
+        return json.loads(self.meta_path.read_text(encoding="utf-8"))
+
+    def check_conflict(self) -> str | None:
+        meta = self._read_meta()
+        if meta is None:
+            return None
+        if meta.get("config_fingerprint") != self.cfg.fingerprint():
+            return CONFLICT_MSG
+        return None
 
 
 # ============================== 张量 / 模型 ==============================
