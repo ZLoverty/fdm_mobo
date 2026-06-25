@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -49,7 +49,7 @@ class Config:
         return cls(params=params, objectives=objs, **kw)
 
     @classmethod
-    def from_yaml(cls, path) -> "Config":
+    def from_yaml(cls, path: "str | Path") -> "Config":
         with open(path, encoding="utf-8") as f:
             return cls.from_dict(yaml.safe_load(f))
 
@@ -69,7 +69,7 @@ class Config:
         blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(blob.encode()).hexdigest()
 
-    def bounds_tensor(self):
+    def bounds_tensor(self) -> "torch.Tensor":
         import torch
         return torch.tensor([[p.low for p in self.params],
                              [p.high for p in self.params]], dtype=torch.double)

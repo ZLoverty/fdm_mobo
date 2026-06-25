@@ -76,3 +76,14 @@ def test_fingerprint_ignores_acqf_budget(tmp_path):
     cfg1 = fc.Config.from_yaml(_write(tmp_path, BASE))
     cfg2 = fc.Config.from_yaml(_write(tmp_path, BASE + "num_restarts: 99\nmc_samples: 64\n"))
     assert cfg1.fingerprint() == cfg2.fingerprint()
+
+
+def test_bounds_tensor_shape_and_values(tmp_path):
+    import pytest
+    torch = pytest.importorskip("torch")
+    cfg = fc.Config.from_yaml(_write(tmp_path, BASE))
+    b = cfg.bounds_tensor()
+    assert b.shape == (2, 2)
+    assert b.dtype == torch.double
+    assert b[0].tolist() == [0.0, 0.9]
+    assert b[1].tolist() == [100.0, 1.1]
