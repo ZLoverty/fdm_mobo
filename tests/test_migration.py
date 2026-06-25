@@ -41,3 +41,24 @@ def test_list_and_current(tmp_path):
     assert core.list_experiments(root) == ["a", "b"]
     core.set_current("b", root=root)
     assert core.get_current(root) == "b"
+
+
+def test_create_experiment_rejects_bad_names(tmp_path):
+    import pytest
+    root = tmp_path / "experiments"
+    for bad in ["", "  ", "a/b", "a\\b", "..", "."]:
+        with pytest.raises(ValueError):
+            core.create_experiment(bad, core.LEGACY_CONFIG_YAML, root=root)
+
+
+def test_migrate_noop_when_csv_missing(tmp_path):
+    root = tmp_path / "experiments"
+    missing = tmp_path / "nope.csv"
+    assert core.migrate_legacy(legacy_csv=missing, root=root) is None
+
+
+def test_get_current_none_on_empty_file(tmp_path):
+    root = tmp_path / "experiments"
+    root.mkdir()
+    (root / ".current").write_text("   ", encoding="utf-8")
+    assert core.get_current(root) is None

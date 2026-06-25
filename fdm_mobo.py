@@ -256,6 +256,8 @@ def set_current(name: str, root=EXPERIMENTS_DIR) -> None:
 
 
 def create_experiment(name: str, template_yaml: str, root=EXPERIMENTS_DIR) -> Experiment:
+    if not name or not name.strip() or "/" in name or "\\" in name or name in (".", ".."):
+        raise ValueError(f"非法实验名: {name!r}")
     d = Path(root) / name
     d.mkdir(parents=True, exist_ok=False)
     (d / "config.yaml").write_text(template_yaml, encoding="utf-8")
