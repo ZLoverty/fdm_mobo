@@ -105,7 +105,12 @@ class App(tk.Tk):
 
     # ─────────────────────── 实验切换 / 新建 / 重建 ───────────────
     def _load_experiment(self, name: str) -> None:
-        exp = core.Experiment(core.EXPERIMENTS_DIR / name)
+        try:
+            exp = core.Experiment(core.EXPERIMENTS_DIR / name)
+        except Exception as e:
+            messagebox.showerror("配置错误", f"无法加载实验 '{name}':\n{e}")
+            self._expvar.set(self.exp.dir.name)
+            return
         conflict = exp.check_conflict()
         if conflict:
             messagebox.showerror("配置冲突", conflict)
@@ -118,6 +123,8 @@ class App(tk.Tk):
         self.refresh()
 
     def _rebuild_for_config(self) -> None:
+        if getattr(self, "_fig", None) is not None:
+            plt.close(self._fig)
         for w in self._left.winfo_children():
             w.destroy()
         for w in self._right.winfo_children():
@@ -145,8 +152,8 @@ class App(tk.Tk):
         self._load_experiment(name)
         try:
             os.startfile(str(core.EXPERIMENTS_DIR / name / "config.yaml"))  # noqa
-        except Exception:
-            pass
+        except Exception as e:
+            messagebox.showwarning("提示", f"已创建实验,但无法自动打开配置文件:\n{e}\n请用『打开配置』手动编辑。")
         messagebox.showinfo("新建实验",
             "已复制当前配置为模板并打开。\n编辑好维度后回来点『初始化』生成起始点。")
 
