@@ -110,73 +110,103 @@ class Experiment:
             return CONFLICT_MSG
         return None
 
+    # ---- 张量 / 模型 ----
+    def to_XY(self):
+        import torch
+        torch.set_default_dtype(torch.double)
+        done = self.load_trials_done()
+        X = torch.tensor([[r[p.name] for p in self.cfg.params] for r in done])
+        Y_raw = torch.tensor([[r[o.name] for o in self.cfg.objectives] for r in done])
+        signs = torch.tensor([o.sign for o in self.cfg.objectives])
+        return X, Y_raw * signs, done
 
-# ============================== 张量 / 模型 ==============================
+    def load_trials_done(self) -> list[dict]:
+        return [r for r in self.load_trials() if self.is_complete(r)]
 
-def bounds_tensor() -> torch.Tensor:
-    return torch.tensor([[p.low for p in PARAMS], [p.high for p in PARAMS]])
+    def fit_model(self, X, Y):
+        from botorch.models import SingleTaskGP
+        from botorch.models.transforms.input import Normalize
+        from botorch.models.transforms.outcome import Standardize
+        from botorch.fit import fit_gpytorch_mll
+        from gpytorch.mlls import ExactMarginalLogLikelihood
+        model = SingleTaskGP(
+            X, Y,
+            input_transform=Normalize(d=X.shape[-1], bounds=self.cfg.bounds_tensor()),
+            outcome_transform=Standardize(m=Y.shape[-1]),
+        )
+        mll = ExactMarginalLogLikelihood(model.likelihood, model)
+        fit_gpytorch_mll(mll)
+        return model
 
+    @staticmethod
+    def _ref_point(Y):
+        import torch
+        mn = Y.min(dim=0).values
+        rng = Y.max(dim=0).values - mn
+        rng = torch.where(rng > 0, rng, torch.ones_like(rng))
+        return mn - 0.1 * rng
 
-def to_XY(rows: list[dict]):
-    """只取已完成的实验,返回 (X 原始单位, Y 内部最大化空间, 已完成行)。"""
-    done = [r for r in rows if is_complete(r)]
-    X = torch.tensor([[r[p.name] for p in PARAMS] for r in done])
-    Y_raw = torch.tensor([[r[o.name] for o in OBJECTIVES] for r in done])
-    signs = torch.tensor([o.sign for o in OBJECTIVES])
-    Y = Y_raw * signs  # min 目标取负,内部一律最大化
-    return X, Y, done
+    def suggest_next(self):
+        import torch
+        torch.set_default_dtype(torch.double)
+        from botorch.acquisition.multi_objective.logei import (
+            qLogNoisyExpectedHypervolumeImprovement,
+        )
+        from botorch.sampling.normal import SobolQMCNormalSampler
+        from botorch.optim import optimize_acqf
+        X, Y, done = self.to_XY()
+        if len(done) < 2:
+            raise RuntimeError("已完成的实验少于 2 个，先回填更多点再 suggest。")
+        model = self.fit_model(X, Y)
+        acqf = qLogNoisyExpectedHypervolumeImprovement(
+            model=model,
+            ref_point=self._ref_point(Y).tolist(),
+            X_baseline=X,
+            prune_baseline=True,
+            sampler=SobolQMCNormalSampler(sample_shape=torch.Size([self.cfg.mc_samples])),
+        )
+        candidates, _ = optimize_acqf(
+            acq_function=acqf,
+            bounds=self.cfg.bounds_tensor(),
+            q=self.cfg.batch,
+            num_restarts=self.cfg.num_restarts,
+            raw_samples=self.cfg.raw_samples,
+        )
+        return candidates.detach()
 
+    def pareto_and_hv(self):
+        from botorch.utils.multi_objective.pareto import is_non_dominated
+        from botorch.utils.multi_objective.box_decompositions.dominated import (
+            DominatedPartitioning,
+        )
+        X, Y, done = self.to_XY()
+        if len(done) == 0:
+            return [], float("nan")
+        mask = is_non_dominated(Y)
+        hv = DominatedPartitioning(ref_point=self._ref_point(Y), Y=Y).compute_hypervolume().item()
+        pareto = [done[i] for i in range(len(done)) if bool(mask[i])]
+        return pareto, hv
 
-def fit_model(X: torch.Tensor, Y: torch.Tensor) -> SingleTaskGP:
-    """一个多输出 GP 同时建模两个目标。输入按搜索范围归一化,输出标准化。"""
-    model = SingleTaskGP(
-        X, Y,
-        input_transform=Normalize(d=X.shape[-1], bounds=bounds_tensor()),
-        outcome_transform=Standardize(m=Y.shape[-1]),
-    )
-    mll = ExactMarginalLogLikelihood(model.likelihood, model)
-    fit_gpytorch_mll(mll)
-    return model
-
-
-def ref_point(Y: torch.Tensor) -> torch.Tensor:
-    """参考点取比最差观测再差一点(内部最大化空间:每维最小值再减 10% 量程)。"""
-    mn = Y.min(dim=0).values
-    rng = Y.max(dim=0).values - mn
-    rng = torch.where(rng > 0, rng, torch.ones_like(rng))
-    return mn - 0.1 * rng
-
-
-def suggest_next(rows: list[dict]) -> torch.Tensor:
-    X, Y, done = to_XY(rows)
-    if len(done) < 2:
-        raise SystemExit("已完成的实验少于 2 个,先 record 更多点再 suggest。")
-    model = fit_model(X, Y)
-    acqf = qLogNoisyExpectedHypervolumeImprovement(
-        model=model,
-        ref_point=ref_point(Y).tolist(),
-        X_baseline=X,                       # 原始单位,模型内部会归一化
-        prune_baseline=True,
-        sampler=SobolQMCNormalSampler(sample_shape=torch.Size([MC_SAMPLES])),
-    )
-    candidates, _ = optimize_acqf(
-        acq_function=acqf,
-        bounds=bounds_tensor(),
-        q=BATCH,
-        num_restarts=NUM_RESTARTS,
-        raw_samples=RAW_SAMPLES,
-    )
-    return candidates.detach()
-
-
-def pareto_and_hv(rows: list[dict]):
-    X, Y, done = to_XY(rows)
-    if len(done) == 0:
-        return [], float("nan")
-    mask = is_non_dominated(Y)
-    hv = DominatedPartitioning(ref_point=ref_point(Y), Y=Y).compute_hypervolume().item()
-    pareto = [done[i] for i in range(len(done)) if bool(mask[i])]
-    return pareto, hv
+    # ---- 初始化 ----
+    def init_sobol(self) -> None:
+        import torch
+        torch.set_default_dtype(torch.double)
+        from botorch.utils.sampling import draw_sobol_samples
+        if self.load_trials():
+            raise RuntimeError("该实验已有数据，init 会覆盖；请新建实验或先清空。")
+        pts = draw_sobol_samples(
+            bounds=self.cfg.bounds_tensor(), n=self.cfg.n_init, q=1, seed=self.cfg.seed
+        ).squeeze(1)
+        rows = []
+        for i, pt in enumerate(pts):
+            r = {"idx": i, "phase": "init", "time": ""}
+            for j, par in enumerate(self.cfg.params):
+                r[par.name] = round(float(pt[j]), 3)
+            for o in self.cfg.objectives:
+                r[o.name] = math.nan
+            rows.append(r)
+        self.save_trials(rows)
+        self.write_meta()
 
 
 # ============================== 展示 ==============================
