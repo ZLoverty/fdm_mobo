@@ -397,11 +397,14 @@ def cmd_status(args):
         pareto, hv = exp.pareto_and_hv()
         print(f"\n当前 Pareto 前沿（{len(pareto)} 个非支配点）：")
         print_rows(exp, pareto)
-        print(f"\n超体积 hypervolume = {hv:.4g}")
+        print(f"\n超体积 hypervolume = {hv:.4g}（越大越好,用来追踪每轮进展）")
 
 
 def cmd_apply(args):
     exp = resolve_experiment(args.exp)
+    names = {p.name for p in exp.cfg.params}
+    if not {"fan", "flow"} <= names:
+        raise SystemExit("apply 仅支持包含 fan 与 flow 参数的实验。")
     r = {x["idx"]: x for x in exp.load_trials()}.get(args.idx)
     if r is None:
         raise SystemExit(f"找不到 #{args.idx}")
@@ -438,8 +441,8 @@ def main():
     p_st = sub.add_parser("status", help="查看实验 / Pareto / 超体积"); add_exp(p_st); p_st.set_defaults(func=cmd_status)
 
     pr = sub.add_parser("record", help="回填测量值"); add_exp(pr)
-    pr.add_argument("--idx", type=int)
-    pr.add_argument("values", nargs="*")
+    pr.add_argument("--idx", type=int, help="指定 trial 编号;不给则交互回填所有待测点")
+    pr.add_argument("values", nargs="*", help="按目标顺序给测量值")
     pr.set_defaults(func=cmd_record)
 
     pa = sub.add_parser("apply", help="(可选) 经 Moonraker 下发 fan/flow"); add_exp(pa)
