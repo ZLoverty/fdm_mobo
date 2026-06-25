@@ -124,6 +124,8 @@ class Experiment:
         return [r for r in self.load_trials() if self.is_complete(r)]
 
     def fit_model(self, X, Y):
+        import torch
+        torch.set_default_dtype(torch.double)
         from botorch.models import SingleTaskGP
         from botorch.models.transforms.input import Normalize
         from botorch.models.transforms.outcome import Standardize
@@ -154,9 +156,9 @@ class Experiment:
         )
         from botorch.sampling.normal import SobolQMCNormalSampler
         from botorch.optim import optimize_acqf
-        X, Y, done = self.to_XY()
-        if len(done) < 2:
+        if len(self.load_trials_done()) < 2:
             raise RuntimeError("已完成的实验少于 2 个，先回填更多点再 suggest。")
+        X, Y, done = self.to_XY()
         model = self.fit_model(X, Y)
         acqf = qLogNoisyExpectedHypervolumeImprovement(
             model=model,

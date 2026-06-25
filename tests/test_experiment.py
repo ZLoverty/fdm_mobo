@@ -116,3 +116,22 @@ def test_pareto_and_hv_smoke(tmp_path):
     ])
     pareto, hv = exp.pareto_and_hv()
     assert len(pareto) >= 1 and isinstance(hv, float)
+
+
+def test_to_XY_negates_min_objective(tmp_path):
+    yaml_text = """\
+params:
+  - {name: fan,  low: 0,   high: 100}
+  - {name: flow, low: 0.9, high: 1.1}
+objectives:
+  - {name: surface, goal: max}
+  - {name: TS,      goal: min}
+n_init: 6
+seed: 0
+"""
+    exp = _make_exp(tmp_path, yaml_text)
+    exp.save_trials([{"idx": 0, "phase": "init", "fan": 20.0, "flow": 1.0,
+                      "surface": 6.0, "TS": 30.0, "time": "t"}])
+    X, Y, done = exp.to_XY()
+    assert Y[0, 0].item() == 6.0      # surface max -> unchanged
+    assert Y[0, 1].item() == -30.0    # TS min -> negated
