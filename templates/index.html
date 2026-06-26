@@ -89,6 +89,43 @@
   }
   #toast.show { opacity: .95; }
   #toast.err { background: #b3261e; }
+
+  /* 配置编辑弹窗 */
+  .modal-mask {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4);
+    z-index: 100; align-items: flex-start; justify-content: center; overflow: auto;
+  }
+  .modal-mask.show { display: flex; }
+  .modal {
+    background: #fff; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,.3);
+    width: 640px; max-width: 94vw; margin: 40px 0; padding: 0;
+  }
+  .modal header {
+    padding: 14px 18px; border-bottom: 1px solid #e2e2e2; font-weight: bold; font-size: 15px;
+  }
+  .modal .body { padding: 16px 18px; }
+  .modal footer {
+    padding: 12px 18px; border-top: 1px solid #e2e2e2; display: flex;
+    justify-content: flex-end; gap: 8px;
+  }
+  .cfg-sec { margin-bottom: 18px; }
+  .cfg-sec > .sec-title { font-weight: bold; color: #444; margin-bottom: 8px; }
+  table.cfg { border-collapse: collapse; width: 100%; }
+  table.cfg th, table.cfg td { padding: 4px 6px; text-align: left; }
+  table.cfg th { font-size: 12px; color: #666; font-weight: normal; }
+  table.cfg input, table.cfg select { width: 100%; }
+  table.cfg td.namecol { width: 36%; }
+  table.cfg td.del { width: 34px; text-align: center; }
+  .icon-btn {
+    border: none; background: transparent; color: #b3261e; font-size: 16px;
+    cursor: pointer; padding: 2px 6px; line-height: 1;
+  }
+  .icon-btn:hover { color: #7a1812; }
+  .add-btn { margin-top: 6px; font-size: 12px; padding: 3px 10px; }
+  .cfg-misc { display: flex; gap: 22px; flex-wrap: wrap; }
+  .cfg-misc label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: #555; }
+  .cfg-misc input { width: 110px; }
+  .cfg-note { color: #999; font-size: 12px; margin-top: 10px; }
 </style>
 </head>
 <body>
@@ -150,6 +187,45 @@
       <span id="vizRadios"></span>
     </div>
     <img id="vizImg" alt="可视化加载中…">
+  </div>
+</div>
+
+<!-- 配置编辑弹窗 -->
+<div class="modal-mask" id="cfgMask">
+  <div class="modal">
+    <header id="cfgTitle">编辑配置</header>
+    <div class="body">
+      <div class="cfg-sec">
+        <div class="sec-title">参数（搜索维度）</div>
+        <table class="cfg">
+          <thead><tr><th class="namecol">名称</th><th>下限 low</th><th>上限 high</th><th></th></tr></thead>
+          <tbody id="cfgParams"></tbody>
+        </table>
+        <button class="add-btn" id="cfgAddParam">+ 添加参数</button>
+      </div>
+
+      <div class="cfg-sec">
+        <div class="sec-title">优化目标</div>
+        <table class="cfg">
+          <thead><tr><th class="namecol">名称</th><th>优化方向</th><th></th></tr></thead>
+          <tbody id="cfgObjs"></tbody>
+        </table>
+        <button class="add-btn" id="cfgAddObj">+ 添加目标</button>
+      </div>
+
+      <div class="cfg-sec">
+        <div class="sec-title">运行设置</div>
+        <div class="cfg-misc">
+          <label>初始点个数 (n_init)<input type="number" id="cfgNInit" min="1" step="1"></label>
+          <label>每轮建议数 (batch)<input type="number" id="cfgBatch" min="1" step="1"></label>
+        </div>
+        <div class="cfg-note">随机种子与采集函数内部参数（seed / num_restarts / raw_samples / mc_samples）保持不变。</div>
+      </div>
+    </div>
+    <footer>
+      <button id="cfgCancel">取消</button>
+      <button id="cfgSave" class="primary">保存</button>
+    </footer>
   </div>
 </div>
 
@@ -404,19 +480,67 @@ async function doNew() {
   } catch (e) { toast(e.message, true); }
 }
 
-// ── 配置查看/编辑（替代桌面版「打开配置」的本地编辑器）──
+// ── 配置查看/编辑（表单弹窗，替代桌面版「打开配置」）──
+function paramRow(p) {
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <td class="namecol"><input type="text" class="c-name" value="${p ? p.name : ""}"></td>
+    <td><input type="number" step="any" class="c-low" value="${p ? p.low : ""}"></td>
+    <td><input type="number" step="any" class="c-high" value="${p ? p.high : ""}"></td>
+    <td class="del"><button class="icon-btn" title="删除">✕</button></td>`;
+  tr.querySelector(".icon-btn").onclick = () => tr.remove();
+  return tr;
+}
+function objRow(o) {
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <td class="namecol"><input type="text" class="c-name" value="${o ? o.name : ""}"></td>
+    <td><select class="c-goal">
+      <option value="max" ${o && o.goal==="max" ? "selected":""}>max ↑ 越大越好</option>
+      <option value="min" ${o && o.goal==="min" ? "selected":""}>min ↓ 越小越好</option>
+    </select></td>
+    <td class="del"><button class="icon-btn" title="删除">✕</button></td>`;
+  tr.querySelector(".icon-btn").onclick = () => tr.remove();
+  return tr;
+}
+
 async function openConfigEditor() {
-  let text;
-  try { text = await (await fetch("/api/config/raw" + expParam())).text(); }
+  let cfg;
+  try { cfg = await api("/api/config" + expParam()); }
   catch (e) { toast(e.message, true); return; }
-  const edited = prompt("编辑 config.yaml（确定后保存）:\n", text);
-  if (edited === null || edited === text) return;
+  $("#cfgTitle").textContent = `编辑配置 — ${cfg.name}`;
+  const pbody = $("#cfgParams"), obody = $("#cfgObjs");
+  pbody.innerHTML = ""; obody.innerHTML = "";
+  (cfg.params || []).forEach(p => pbody.appendChild(paramRow(p)));
+  (cfg.objectives || []).forEach(o => obody.appendChild(objRow(o)));
+  $("#cfgNInit").value = cfg.n_init;
+  $("#cfgBatch").value = cfg.batch;
+  $("#cfgMask").classList.add("show");
+}
+function closeConfigEditor() { $("#cfgMask").classList.remove("show"); }
+
+async function saveConfig() {
+  const params = [...$("#cfgParams").querySelectorAll("tr")].map(tr => ({
+    name: tr.querySelector(".c-name").value.trim(),
+    low:  tr.querySelector(".c-low").value,
+    high: tr.querySelector(".c-high").value,
+  }));
+  const objectives = [...$("#cfgObjs").querySelectorAll("tr")].map(tr => ({
+    name: tr.querySelector(".c-name").value.trim(),
+    goal: tr.querySelector(".c-goal").value,
+  }));
+  const payload = {
+    params, objectives,
+    n_init: $("#cfgNInit").value,
+    batch: $("#cfgBatch").value,
+  };
   try {
-    await api("/api/config/raw" + expParam(), {
+    await api("/api/config" + expParam(), {
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ text: edited }),
+      body: JSON.stringify(payload),
     });
-    toast("配置已保存。如改了维度，请点『初始化』。");
+    closeConfigEditor();
+    toast("配置已保存。如改了参数/目标维度，请点『初始化』。");
     await refresh();
   } catch (e) { toast(e.message, true); }
 }
@@ -442,6 +566,11 @@ $("#expSelect").addEventListener("change", async (e) => {
 });
 $("#btnNew").addEventListener("click", doNew);
 $("#btnConfig").addEventListener("click", openConfigEditor);
+$("#cfgAddParam").addEventListener("click", () => $("#cfgParams").appendChild(paramRow(null)));
+$("#cfgAddObj").addEventListener("click", () => $("#cfgObjs").appendChild(objRow(null)));
+$("#cfgCancel").addEventListener("click", closeConfigEditor);
+$("#cfgSave").addEventListener("click", saveConfig);
+$("#cfgMask").addEventListener("click", (e) => { if (e.target === $("#cfgMask")) closeConfigEditor(); });
 $("#btnSubmit").addEventListener("click", doSubmit);
 $("#btnSuggest").addEventListener("click", doSuggest);
 $("#btnInit").addEventListener("click", doInit);

@@ -150,14 +150,77 @@ def api_new():
 
 
 # ─────────────────────────── API：配置 ───────────────────────────────
-@app.route("/api/config")
+# 这些是 BO 算法/随机数内部参数，不在表单中展示，保存时原样保留。
+_HIDDEN_CFG_KEYS = ("seed", "num_restarts", "raw_samples", "mc_samples")
+# YAML 文件中键的输出顺序
+_CFG_KEY_ORDER = ("params", "objectives", "n_init", "seed", "batch",
+                  "num_restarts", "raw_samples", "mc_samples")
+
+
+@app.route("/api/config", methods=["GET", "POST"])
 def api_config():
     exp = _open_experiment(request.args.get("exp"))
-    return jsonify({
-        "name": exp.dir.name,
-        "params": [{"name": p.name, "low": p.low, "high": p.high} for p in exp.cfg.params],
-        "objectives": [{"name": o.name, "goal": o.goal} for o in exp.cfg.objectives],
-    })
+    if request.method == "GET":
+        return jsonify({
+            "name": exp.dir.name,
+            "params": [{"name": p.name, "low": p.low, "high": p.high} for p in exp.cfg.params],
+            "objectives": [{"name": o.name, "goal": o.goal} for o in exp.cfg.objectives],
+            "n_init": exp.cfg.n_init,
+            "batch": exp.cfg.batch,
+        })
+
+    # POST：从结构化表单保存配置，隐藏的算法参数沿用旧值
+    import yaml
+    data = request.json or {}
+    old = yaml.safe_load((exp.dir / "config.yaml").read_text(encoding="utf-8")) or {}
+
+    params, objectives = [], []
+    for p in data.get("params", []):
+        name = (p.get("name") or "").strip()
+        if not name:
+            abort(400, description="参数名不能为空")
+        try:
+            low, high = float(p["low"]), float(p["high"])
+        except (TypeError, ValueError, KeyError):
+            abort(400, description=f"参数 '{name}' 的范围必须是数字")
+        if high <= low:
+            abort(400, description=f"参数 '{name}' 的上限必须大于下限")
+        params.append({"name": name, "low": low, "high": high})
+    for o in data.get("objectives", []):
+        name = (o.get("name") or "").strip()
+        goal = o.get("goal")
+        if not name:
+            abort(400, description="目标名不能为空")
+        if goal not in ("max", "min"):
+            abort(400, description=f"目标 '{name}' 的优化方向必须是 max 或 min")
+        objectives.append({"name": name, "goal": goal})
+    if not params:
+        abort(400, description="至少需要 1 个参数")
+    if not objectives:
+        abort(400, description="至少需要 1 个目标")
+
+    new_cfg = dict(old)
+    new_cfg["params"] = params
+    new_cfg["objectives"] = objectives
+    for k in ("n_init", "batch"):
+        if k in data and data[k] not in ("", None):
+            try:
+                new_cfg[k] = int(data[k])
+            except (TypeError, ValueError):
+                abort(400, description=f"{k} 必须是整数")
+
+    try:
+        core.Config.from_dict(new_cfg)  # 校验
+    except Exception as e:
+        abort(400, description=f"配置无效: {e}")
+
+    ordered = {k: new_cfg[k] for k in _CFG_KEY_ORDER if k in new_cfg}
+    for k, v in new_cfg.items():  # 保留任何未知键
+        ordered.setdefault(k, v)
+    text = yaml.safe_dump(ordered, allow_unicode=True, sort_keys=False,
+                          default_flow_style=False)
+    (exp.dir / "config.yaml").write_text(text, encoding="utf-8")
+    return jsonify({"ok": True})
 
 
 @app.route("/api/config/raw", methods=["GET", "POST"])
@@ -169,7 +232,6 @@ def api_config_raw():
     # POST：保存新的 yaml（先校验可解析）
     text = (request.json or {}).get("text", "")
     try:
-        core.Config.from_yaml  # noqa  存在性检查
         import yaml
         core.Config.from_dict(yaml.safe_load(text))
     except Exception as e:
