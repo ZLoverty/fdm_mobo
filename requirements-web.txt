@@ -1,6 +1,6 @@
 # Web 前端依赖（在原有 fdm_mobo 依赖之外）
 flask>=3.0
-matplotlib
 pyyaml
+# 可视化在前端用 Plotly.js（已打包 static/plotly-basic.min.js），服务端不需要画图库。
 # BO 操作仍需（懒加载）：
 # botorch

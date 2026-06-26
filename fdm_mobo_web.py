@@ -5,38 +5,18 @@ fdm_mobo_web.py — FDM 多目标贝叶斯优化 Web 前端
 把原 tkinter GUI(fdm_mobo_gui.py) 封装为 Web App，界面布局保持基本不变：
 顶部实验选择栏 + 左侧历史表格 + 右侧当前待测/统计 + 底部可视化双图。
 新增：数据下载接口（trials.csv / config.yaml）。
+可视化由前端 Plotly.js 渲染（浏览器画图，无服务端字体问题），服务端只出数据。
 
-依赖: pip install flask matplotlib pyyaml  (BO 操作另需 botorch，懒加载)
+依赖: pip install flask pyyaml  (BO 操作另需 botorch，懒加载)
 运行: python fdm_mobo_web.py    然后浏览器打开 http://127.0.0.1:5000
 """
 from __future__ import annotations
 
-import io
 import math
 import os
 import sys
 from datetime import datetime
 
-import matplotlib
-matplotlib.use("Agg")  # 无界面后端，服务端渲染 PNG
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as _fm
-
-# 自动选第一个可用的 CJK 字体
-_CJK_CANDIDATES = [
-    "PingFang SC", "STHeiti", "Heiti SC",
-    "Microsoft YaHei", "SimHei", "SimSun",
-    "Noto Sans CJK SC", "WenQuanYi Micro Hei",
-    "Arial Unicode MS",
-]
-_available = {f.name for f in _fm.fontManager.ttflist}
-for _f in _CJK_CANDIDATES:
-    if _f in _available:
-        plt.rcParams["font.sans-serif"] = [_f] + plt.rcParams["font.sans-serif"]
-        break
-plt.rcParams["axes.unicode_minus"] = False
-
-import numpy as np
 from flask import (
     Flask, jsonify, request, send_file, render_template, abort, Response,
 )
@@ -368,95 +348,7 @@ def api_init():
     return jsonify({"ok": True})
 
 
-# ─────────────────────────── 可视化（服务端渲染） ────────────────────
-@app.route("/api/plot.png")
-def api_plot():
-    exp = _open_experiment(request.args.get("exp"))
-    oname = request.args.get("color") or exp.cfg.objectives[0].name
-    rows = exp.load_trials()
-    pareto_idxs = _pareto_idxs(exp, rows)
-    done = [r for r in rows if exp.is_complete(r)]
-    pending = [r for r in rows if not exp.is_complete(r)]
-    if oname not in {o.name for o in exp.cfg.objectives}:
-        oname = exp.cfg.objectives[0].name
-
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 3.6), constrained_layout=True)
-    fig.patch.set_facecolor("#f7f7f7")
-
-    # ── 左图：参数空间 ──
-    ax = ax1
-    if len(exp.cfg.params) >= 2:
-        px, py = exp.cfg.params[0], exp.cfg.params[1]
-        if done:
-            xs = np.array([r[px.name] for r in done])
-            ys = np.array([r[py.name] for r in done])
-            vs = np.array([r[oname] for r in done], dtype=float)
-            sc = ax.scatter(xs, ys, c=vs, cmap="RdYlGn", s=75, zorder=3,
-                            edgecolors="#444", linewidths=0.5)
-            fig.colorbar(sc, ax=ax, label=oname, shrink=0.85, pad=0.02)
-            for r in done:
-                ax.annotate(f"#{r['idx']}", (r[px.name], r[py.name]),
-                            xytext=(4, 3), textcoords="offset points",
-                            fontsize=7.5, color="#222")
-            pp = [r for r in done if r["idx"] in pareto_idxs]
-            if pp:
-                ax.scatter([r[px.name] for r in pp], [r[py.name] for r in pp],
-                           s=200, facecolors="none", edgecolors="#0044bb",
-                           linewidths=2.2, zorder=5, label="Pareto")
-        if pending:
-            ax.scatter([r[px.name] for r in pending], [r[py.name] for r in pending],
-                       marker="x", s=95, c="#b84800", lw=2.2, zorder=4, label="待测")
-            for r in pending:
-                ax.annotate(f"#{r['idx']}", (r[px.name], r[py.name]),
-                            xytext=(4, 3), textcoords="offset points",
-                            fontsize=7.5, color="#b84800")
-        mx = (px.high - px.low) * 0.06
-        my = (py.high - py.low) * 0.06
-        ax.set_xlim(px.low - mx, px.high + mx)
-        ax.set_ylim(py.low - my, py.high + my)
-        ax.set_xlabel(px.name, fontsize=10)
-        ax.set_ylabel(py.name, fontsize=10)
-        ax.set_title("参数空间", fontsize=10)
-        ax.grid(True, alpha=0.22)
-        if done or pending:
-            ax.legend(fontsize=8, loc="upper right")
-    else:
-        ax.text(0.5, 0.5, "需要 ≥2 个参数才能绘制参数空间",
-                ha="center", va="center", transform=ax.transAxes,
-                fontsize=10, color="#888")
-        ax.set_title("参数空间", fontsize=10)
-
-    # ── 右图：目标空间 ──
-    if len(exp.cfg.objectives) >= 2 and done:
-        o1, o2 = exp.cfg.objectives[0], exp.cfg.objectives[1]
-        x2 = np.array([r[o1.name] for r in done])
-        y2 = np.array([r[o2.name] for r in done])
-        ax2.scatter(x2, y2, s=68, color="#2e8b2e", zorder=3,
-                    edgecolors="#333", linewidths=0.5, label="已测")
-        for r in done:
-            ax2.annotate(f"#{r['idx']}", (r[o1.name], r[o2.name]),
-                         xytext=(4, 3), textcoords="offset points", fontsize=7.5)
-        pp = [r for r in done if r["idx"] in pareto_idxs]
-        if pp:
-            ax2.scatter([r[o1.name] for r in pp], [r[o2.name] for r in pp],
-                        s=160, facecolors="none", edgecolors="#0044bb",
-                        linewidths=2.2, zorder=5, label="Pareto 前沿")
-            if len(pp) > 1:
-                sp = sorted(pp, key=lambda r: r[o1.name])
-                ax2.step([r[o1.name] for r in sp], [r[o2.name] for r in sp],
-                         where="post", color="#0044bb", alpha=0.4, lw=1.6, zorder=4)
-    ax2.set_xlabel(exp.cfg.objectives[0].name, fontsize=10)
-    ax2.set_ylabel(exp.cfg.objectives[1].name if len(exp.cfg.objectives) >= 2 else "", fontsize=10)
-    ax2.set_title("目标空间 (Pareto 前沿)", fontsize=10)
-    ax2.grid(True, alpha=0.22)
-    if done:
-        ax2.legend(fontsize=8, loc="lower right")
-
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=110)
-    plt.close(fig)
-    buf.seek(0)
-    return send_file(buf, mimetype="image/png")
+# 可视化已迁到前端（Plotly.js），服务端只经 /api/trials 提供数据。
 
 
 # ─────────────────────────── 数据下载接口 ────────────────────────────

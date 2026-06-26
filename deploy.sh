@@ -59,8 +59,8 @@ setup_venv() {
   fi
   log "升级 pip"
   "$PY" -m pip install --quiet --upgrade pip
-  log "安装 Web 依赖 (flask / matplotlib / pyyaml / gunicorn)"
-  "$PIP" install --quiet flask matplotlib pyyaml gunicorn
+  log "安装 Web 依赖 (flask / pyyaml / gunicorn)"
+  "$PIP" install --quiet flask pyyaml gunicorn
   if [[ "$INSTALL_BO" -eq 1 ]]; then
     if "$PY" -c "import botorch" >/dev/null 2>&1; then
       log "botorch 已安装,跳过"

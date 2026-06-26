@@ -7,7 +7,7 @@
 ## 运行
 
 ```bash
-pip install -r requirements-web.txt      # flask / matplotlib / pyyaml（BO 另需 botorch）
+pip install -r requirements-web.txt      # flask / pyyaml（BO 另需 botorch）
 python fdm_mobo_web.py                    # 默认 http://127.0.0.1:5000
 # 换端口： PORT=8080 python fdm_mobo_web.py
 ```
@@ -19,7 +19,7 @@ python fdm_mobo_web.py                    # 默认 http://127.0.0.1:5000
 - **顶部实验栏**：切换实验、新建实验、查看/编辑 `config.yaml`。
 - **左侧历史表格**：所有 trial；待测点橙色、Pareto 点蓝色加粗；**双击参数/结果单元格可编辑**。
 - **右侧当前待测 + 统计**：大字显示当前待测参数，填写测量结果后提交；统计显示完成数、超体积、各目标最佳值。
-- **底部可视化**：参数空间 + 目标空间（Pareto 前沿）双图，由服务端用与桌面版相同的 matplotlib 代码渲染，确保观感一致。
+- **底部可视化**：参数空间 + 目标空间（Pareto 前沿）双图，由浏览器端 Plotly.js 渲染，支持缩放/平移/悬停看数值。
 
 ## 新增：数据下载接口
 
@@ -30,7 +30,6 @@ python fdm_mobo_web.py                    # 默认 http://127.0.0.1:5000
 | `GET /api/download/trials?exp=<名称>` | 下载该实验的 `trials.csv` |
 | `GET /api/download/config?exp=<名称>` | 下载该实验的 `config.yaml` |
 | `GET /api/trials?exp=<名称>` | 结构化 JSON（行数据 + Pareto + 统计），便于程序化抓取 |
-| `GET /api/plot.png?exp=<名称>&color=<目标>` | 当前可视化 PNG |
 
 ## Linux 一键部署
 
@@ -53,6 +52,13 @@ journalctl -u fdm-mobo-web -f           # 查看日志
 可用环境变量覆盖：`PORT`(5002)、`HOST`(0.0.0.0)、`WORKERS`(2)、`THREADS`(4)、`TIMEOUT`(300s)、`SERVICE_NAME`(fdm-mobo-web)。
 
 > 多 worker 下各实验数据仍共享同一份 `experiments/` 目录，但本应用面向单人 human-in-the-loop 使用，并发写入需自行避免。
+
+## 可视化（Plotly.js，前端渲染）
+
+图由浏览器端 Plotly.js 渲染，服务端只经 `/api/trials` 出数据，**不再依赖服务端字体/matplotlib**——
+中文由浏览器用系统字体显示，之前 Linux 服务器上的字体问题不复存在；同时获得缩放、平移、悬停看数值等交互。
+
+- Plotly 库已打包在 `static/plotly-basic.min.js`（约 1MB），内网/离线可用；若本地未加载会自动回退 CDN。
 
 ## 说明
 
