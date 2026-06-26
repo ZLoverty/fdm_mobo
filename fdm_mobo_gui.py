@@ -235,7 +235,7 @@ class App(tk.Tk):
         self.btn_init    = ttk.Button(bf, text="初始化",      command=self._init,    width=9)
         self.btn_submit .pack(side=tk.LEFT, padx=3)
         self.btn_suggest.pack(side=tk.LEFT, padx=3)
-        self.btn_init   .pack(side=tk.LEFT, padx=3)
+        # self.btn_init   .pack(side=tk.LEFT, padx=3)
 
         self._statusvar = tk.StringVar(value="")
         ttk.Label(frm, textvariable=self._statusvar, foreground="#555",

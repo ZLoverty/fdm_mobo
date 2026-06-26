@@ -1,0 +1,6 @@
+# Web 前端依赖（在原有 fdm_mobo 依赖之外）
+flask>=3.0
+matplotlib
+pyyaml
+# BO 操作仍需（懒加载）：
+# botorch

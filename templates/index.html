@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FDM 多目标贝叶斯优化</title>
+<style>
+  :root { --pending:#b84800; --pareto:#0044bb; --blue:#003399; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+    background: #ececec; color: #222; font-size: 14px;
+  }
+  h2,h3 { margin: 0; }
+  button {
+    font-family: inherit; font-size: 13px; padding: 5px 12px; cursor: pointer;
+    border: 1px solid #b5b5b5; border-radius: 4px; background: #fafafa;
+  }
+  button:hover:not(:disabled) { background: #eaeaea; }
+  button:disabled { color: #aaa; cursor: not-allowed; }
+  button.primary { background: #2566d6; color: #fff; border-color: #1d54b3; }
+  button.primary:hover:not(:disabled) { background: #1d54b3; }
+  input[type=text], input[type=number] {
+    font-family: inherit; font-size: 13px; padding: 4px 6px;
+    border: 1px solid #bbb; border-radius: 4px;
+  }
+  select { font-size: 13px; padding: 4px 6px; border: 1px solid #bbb; border-radius: 4px; }
+
+  /* 顶部实验栏 */
+  .expbar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 8px 12px; background: #f7f7f7; border-bottom: 1px solid #d8d8d8;
+  }
+  .expbar .label { font-weight: bold; }
+  .expbar .spacer { flex: 1; }
+
+  .layout { padding: 8px; }
+  .panel {
+    background: #fff; border: 1px solid #d6d6d6; border-radius: 6px;
+    padding: 10px; margin-bottom: 8px;
+  }
+  .panel > .panel-title {
+    font-weight: bold; color: #444; margin: -2px 0 8px; font-size: 13px;
+  }
+  .row { display: flex; gap: 8px; align-items: flex-start; }
+  .col-left { flex: 3; min-width: 0; }
+  .col-right { flex: 2; min-width: 280px; }
+
+  /* 历史表格 */
+  .table-wrap { max-height: 340px; overflow: auto; border: 1px solid #e0e0e0; border-radius: 4px; }
+  table.trials { border-collapse: collapse; width: 100%; font-size: 13px; }
+  table.trials th, table.trials td {
+    border: 1px solid #e6e6e6; padding: 4px 8px; text-align: center; white-space: nowrap;
+  }
+  table.trials thead th {
+    position: sticky; top: 0; background: #f3f3f3; z-index: 1;
+  }
+  table.trials td.editable { cursor: pointer; }
+  table.trials td.editable:hover { background: #fff7e6; }
+  tr.pending td { color: var(--pending); }
+  tr.pareto td { color: var(--pareto); font-weight: bold; }
+  .hint { color: #888; font-size: 12px; font-weight: normal; }
+
+  /* 当前待测 */
+  .param-grid { display: flex; gap: 28px; flex-wrap: wrap; justify-content: center; padding: 6px 0 12px; }
+  .param-cell { text-align: center; }
+  .param-cell .pname { font-weight: bold; font-size: 12px; }
+  .param-cell .pval { font-size: 28px; font-weight: bold; color: var(--blue); line-height: 1.1; }
+  .param-cell .prange { color: #777; font-size: 11px; }
+  .result-form { border: 1px solid #e0e0e0; border-radius: 4px; padding: 10px; }
+  .result-form .frm-title { font-size: 12px; color: #555; margin-bottom: 6px; }
+  .result-row { display: flex; align-items: center; gap: 8px; margin: 5px 0; }
+  .result-row label { min-width: 150px; text-align: right; }
+  .btnbar { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .status { color: #555; font-size: 12px; margin-top: 8px; min-height: 16px; }
+
+  /* 统计 */
+  pre.stats { font-family: Consolas, "Courier New", monospace; font-size: 13px; margin: 0; white-space: pre-wrap; }
+
+  /* 可视化 */
+  .viz img { width: 100%; max-width: 1000px; display: block; }
+  .viz-ctrl { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; flex-wrap: wrap; }
+  .viz-ctrl label { display: inline-flex; align-items: center; gap: 4px; }
+
+  #toast {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    background: #333; color: #fff; padding: 9px 16px; border-radius: 6px;
+    opacity: 0; transition: opacity .25s; pointer-events: none; z-index: 50; max-width: 80vw;
+  }
+  #toast.show { opacity: .95; }
+  #toast.err { background: #b3261e; }
+</style>
+</head>
+<body>
+
+<div class="expbar">
+  <span class="label">实验:</span>
+  <select id="expSelect"></select>
+  <button id="btnNew">新建实验</button>
+  <button id="btnConfig">打开配置</button>
+  <span class="spacer"></span>
+  <button id="btnDlTrials">⬇ 下载数据 (CSV)</button>
+  <button id="btnDlConfig">⬇ 下载配置</button>
+</div>
+
+<div class="layout">
+  <div class="row">
+    <!-- 左：历史表格 -->
+    <div class="col-left">
+      <div class="panel">
+        <div class="panel-title">实验历史 <span class="hint">双击参数/结果列可编辑</span></div>
+        <div class="table-wrap">
+          <table class="trials">
+            <thead><tr id="tblHead"></tr></thead>
+            <tbody id="tblBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右：当前待测 + 统计 -->
+    <div class="col-right">
+      <div class="panel">
+        <div class="panel-title">当前待测</div>
+        <div class="param-grid" id="paramGrid"></div>
+        <div class="result-form">
+          <div class="frm-title">填写测量结果</div>
+          <div id="resultInputs"></div>
+        </div>
+        <div class="btnbar">
+          <button id="btnSubmit" class="primary">提交结果</button>
+          <button id="btnSuggest">获取 BO 建议</button>
+          <button id="btnInit">初始化</button>
+        </div>
+        <div class="status" id="statusLine"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">统计</div>
+        <pre class="stats" id="statsBox">—</pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- 可视化 -->
+  <div class="panel viz">
+    <div class="panel-title">可视化</div>
+    <div class="viz-ctrl">
+      <span>参数空间颜色映射:</span>
+      <span id="vizRadios"></span>
+    </div>
+    <img id="vizImg" alt="可视化加载中…">
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let CFG = { params: [], objectives: [] };
+let CURRENT_EXP = null;
+let COLOR = null;
+
+function toast(msg, isErr=false) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.className = "show" + (isErr ? " err" : "");
+  clearTimeout(t._t);
+  t._t = setTimeout(() => t.className = "", 2600);
+}
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  let data = null;
+  try { data = await res.json(); } catch (e) {}
+  if (!res.ok) throw new Error((data && data.error) || res.statusText);
+  return data;
+}
+
+function expParam() {
+  return CURRENT_EXP ? ("?exp=" + encodeURIComponent(CURRENT_EXP)) : "";
+}
+function expQuery(extra) {
+  const p = new URLSearchParams();
+  if (CURRENT_EXP) p.set("exp", CURRENT_EXP);
+  for (const k in (extra||{})) p.set(k, extra[k]);
+  const s = p.toString();
+  return s ? ("?" + s) : "";
+}
+
+// ── 实验列表 ──
+async function loadExperiments() {
+  const d = await api("/api/experiments");
+  CURRENT_EXP = d.current;
+  const sel = $("#expSelect");
+  sel.innerHTML = "";
+  for (const name of d.experiments) {
+    const o = document.createElement("option");
+    o.value = name; o.textContent = name;
+    if (name === d.current) o.selected = true;
+    sel.appendChild(o);
+  }
+}
+
+// ── 主刷新 ──
+async function refresh() {
+  let d;
+  try {
+    d = await api("/api/trials" + expParam());
+  } catch (e) {
+    toast("加载失败: " + e.message, true);
+    return;
+  }
+  CFG.params = d.params;
+  CFG.objectives = d.objectives;
+  if (!COLOR || !d.objectives.some(o => o.name === COLOR))
+    COLOR = d.objectives[0] ? d.objectives[0].name : null;
+
+  renderTable(d);
+  renderCurrent(d);
+  renderStats(d);
+  renderVizControls();
+  refreshViz();
+}
+
+// ── 历史表格 ──
+function colNames() {
+  return ["idx", "phase",
+    ...CFG.params.map(p => p.name),
+    ...CFG.objectives.map(o => o.name),
+    "time"];
+}
+function fmtNum(v) {
+  if (v === null || v === undefined || v === "") return "";
+  if (typeof v === "number") return Number.isInteger(v) ? String(v) : (+v.toPrecision(6)).toString();
+  return String(v);
+}
+function renderTable(d) {
+  const cols = colNames();
+  $("#tblHead").innerHTML = cols.map(c => `<th>${c}</th>`).join("");
+  const objNames = new Set(CFG.objectives.map(o => o.name));
+  const editable = new Set([...CFG.params.map(p=>p.name), ...CFG.objectives.map(o=>o.name)]);
+  const pareto = new Set(d.pareto);
+  const body = $("#tblBody");
+  body.innerHTML = "";
+  for (const r of d.rows) {
+    const tr = document.createElement("tr");
+    tr.className = pareto.has(r.idx) ? "pareto" : (!r._complete ? "pending" : "");
+    for (const c of cols) {
+      const td = document.createElement("td");
+      let v = r[c];
+      if (objNames.has(c)) td.textContent = (v === null) ? "?" : fmtNum(v);
+      else td.textContent = fmtNum(v);
+      if (editable.has(c)) {
+        td.className = "editable";
+        td.title = "双击编辑";
+        td.ondblclick = () => editCell(r.idx, c, v);
+      }
+      tr.appendChild(td);
+    }
+    body.appendChild(tr);
+  }
+}
+
+async function editCell(idx, col, cur) {
+  const s = prompt(`#${idx}  ${col}\n当前值: ${cur === null ? "?" : cur}`, "");
+  if (s === null || s.trim() === "") return;
+  try {
+    await api("/api/edit" + expParam(), {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ idx, col, value: s.trim() }),
+    });
+    await refresh();
+  } catch (e) { toast(e.message, true); }
+}
+
+// ── 当前待测 ──
+function renderCurrent(d) {
+  const grid = $("#paramGrid");
+  const inputs = $("#resultInputs");
+  grid.innerHTML = "";
+  inputs.innerHTML = "";
+  const cur = d.current;
+
+  for (const p of CFG.params) {
+    const cell = document.createElement("div");
+    cell.className = "param-cell";
+    const val = cur ? fmtNum(cur[p.name]) : "—";
+    cell.innerHTML = `<div class="pname">${p.name}</div>
+      <div class="pval">${val}</div>
+      <div class="prange">[${(+p.low.toPrecision(4))} – ${(+p.high.toPrecision(4))}]</div>`;
+    grid.appendChild(cell);
+  }
+  for (const o of CFG.objectives) {
+    const tag = o.goal === "max" ? "↑ 越大越好" : "↓ 越小越好";
+    const row = document.createElement("div");
+    row.className = "result-row";
+    row.innerHTML = `<label>${o.name} (${tag}):</label>
+      <input type="text" data-obj="${o.name}" ${cur ? "" : "disabled"}>`;
+    inputs.appendChild(row);
+  }
+  // 回车提交
+  inputs.querySelectorAll("input").forEach(inp => {
+    inp.addEventListener("keydown", e => { if (e.key === "Enter") doSubmit(); });
+  });
+
+  $("#btnSubmit").disabled = !cur;
+  $("#btnSuggest").disabled = !(d.pending_count === 0 && d.stats.done >= 2);
+  $("#statusLine").textContent = statusText(d);
+  $("#btnSubmit").dataset.idx = cur ? cur.idx : "";
+}
+function statusText(d) {
+  if (d.current) return `#${d.current.idx} 待测  |  共 ${d.pending_count} 个未完成`;
+  if (d.stats.total === 0) return "尚无数据，点击「初始化」开始";
+  if (d.stats.done < 2) return `已完成 ${d.stats.done} 个，至少需要 2 个才能运行 BO`;
+  return `全部已完成（${d.stats.done} 个），可获取 BO 建议`;
+}
+
+// ── 统计 ──
+function renderStats(d) {
+  const s = d.stats;
+  if (s.done === 0) { $("#statsBox").textContent = "暂无已完成实验"; return; }
+  const lines = [`总计 ${s.total} 点  |  完成 ${s.done}  |  待测 ${s.pending}`];
+  if (s.hypervolume !== null)
+    lines.push(`超体积 = ${(+s.hypervolume.toPrecision(4))}  |  Pareto = ${s.pareto_count} 个非支配点`);
+  for (const o of CFG.objectives) {
+    if (o.name in s.best) lines.push(`最佳 ${o.name} = ${fmtNum(s.best[o.name])}`);
+  }
+  $("#statsBox").textContent = lines.join("\n");
+}
+
+// ── 可视化 ──
+function renderVizControls() {
+  const box = $("#vizRadios");
+  box.innerHTML = "";
+  for (const o of CFG.objectives) {
+    const lab = document.createElement("label");
+    lab.innerHTML = `<input type="radio" name="vizcolor" value="${o.name}" ${o.name===COLOR?"checked":""}> ${o.name}`;
+    lab.querySelector("input").addEventListener("change", () => { COLOR = o.name; refreshViz(); });
+    box.appendChild(lab);
+  }
+}
+function refreshViz() {
+  const url = "/api/plot.png" + expQuery({ color: COLOR || "", _: Date.now() });
+  $("#vizImg").src = url;
+}
+
+// ── 操作 ──
+async function doSubmit() {
+  const idx = $("#btnSubmit").dataset.idx;
+  if (idx === "") return;
+  const values = {};
+  for (const inp of $("#resultInputs").querySelectorAll("input")) {
+    const name = inp.dataset.obj;
+    if (!inp.value.trim()) { toast(`请填写 ${name} 的测量值`, true); inp.focus(); return; }
+    values[name] = inp.value.trim();
+  }
+  try {
+    await api("/api/submit" + expParam(), {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ idx: Number(idx), values }),
+    });
+    toast("已提交");
+    await refresh();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function doSuggest() {
+  const btn = $("#btnSuggest");
+  btn.disabled = true; const old = btn.textContent; btn.textContent = "计算中…";
+  $("#statusLine").textContent = "正在运行贝叶斯优化，请稍候…";
+  try {
+    await api("/api/suggest" + expParam(), { method: "POST" });
+    toast("BO 建议已生成");
+    await refresh();
+  } catch (e) {
+    toast(e.message, true);
+    await refresh();
+  } finally { btn.textContent = old; }
+}
+
+async function doInit() {
+  if (!confirm("将删除该实验所有数据并按当前 config.yaml 重新生成 Sobol 起始点，继续？")) return;
+  try {
+    await api("/api/init" + expParam(), { method: "POST" });
+    toast("已初始化");
+    await refresh();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function doNew() {
+  const name = prompt("实验名（将作为文件夹名）:", "");
+  if (!name || !name.trim()) return;
+  try {
+    const d = await api("/api/experiments/new", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ name: name.trim() }),
+    });
+    CURRENT_EXP = d.current;
+    await loadExperiments();
+    await refresh();
+    toast("已复制当前配置为模板。编辑维度后点『初始化』生成起始点。");
+    openConfigEditor();
+  } catch (e) { toast(e.message, true); }
+}
+
+// ── 配置查看/编辑（替代桌面版「打开配置」的本地编辑器）──
+async function openConfigEditor() {
+  let text;
+  try { text = await (await fetch("/api/config/raw" + expParam())).text(); }
+  catch (e) { toast(e.message, true); return; }
+  const edited = prompt("编辑 config.yaml（确定后保存）:\n", text);
+  if (edited === null || edited === text) return;
+  try {
+    await api("/api/config/raw" + expParam(), {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ text: edited }),
+    });
+    toast("配置已保存。如改了维度，请点『初始化』。");
+    await refresh();
+  } catch (e) { toast(e.message, true); }
+}
+
+function download(path) {
+  window.location.href = path;
+}
+
+// ── 绑定 ──
+$("#expSelect").addEventListener("change", async (e) => {
+  try {
+    await api("/api/experiments/select", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ name: e.target.value }),
+    });
+    CURRENT_EXP = e.target.value;
+    COLOR = null;
+    await refresh();
+  } catch (err) {
+    toast(err.message, true);
+    await loadExperiments();
+  }
+});
+$("#btnNew").addEventListener("click", doNew);
+$("#btnConfig").addEventListener("click", openConfigEditor);
+$("#btnSubmit").addEventListener("click", doSubmit);
+$("#btnSuggest").addEventListener("click", doSuggest);
+$("#btnInit").addEventListener("click", doInit);
+$("#btnDlTrials").addEventListener("click", () => download("/api/download/trials" + expParam()));
+$("#btnDlConfig").addEventListener("click", () => download("/api/download/config" + expParam()));
+
+// ── 启动 ──
+(async () => {
+  await loadExperiments();
+  await refresh();
+})();
+</script>
+</body>
+</html>
